@@ -4,10 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ДопОбразование – Google Sheets</title>
-    <script src="https://apis.google.com/js/api.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
-        /* ---------- Все стили такие же, как в предыдущей версии ---------- */
         * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI', Roboto, system-ui, sans-serif; }
         body { background:#f4f7fc; min-height:100vh; display:flex; flex-direction:column; }
         #loginScreen { display:flex; justify-content:center; align-items:center; min-height:100vh; background:linear-gradient(135deg,#2a3f6e,#1a2a4a); padding:20px; }
@@ -250,41 +248,71 @@
 
 <script>
     // ================================================================
-    //  НАСТРОЙКИ GOOGLE SHEETS (уже с твоими данными)
+    //  НАСТРОЙКИ (твои данные уже вставлены)
     // ================================================================
     const CLIENT_ID = '600281101400-1j62rkqan41opsn0cu8fpjv6ej99vkts.apps.googleusercontent.com';
     const SPREADSHEET_ID = '1tjLqYUoLzqtLo1l-TsRpmyMERWeEkn9d0EqFT6AyPcA';
     const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
 
     // ================================================================
-    //  ПЕРЕМЕННЫЕ ДЛЯ ОТЛАДКИ
+    //  ЗАГРУЗКА GOOGLE API
+    // ================================================================
+    function loadGoogleAPI() {
+        return new Promise((resolve, reject) => {
+            if (typeof google !== 'undefined' && google.accounts) {
+                resolve();
+                return;
+            }
+            const script = document.createElement('script');
+            script.src = 'https://accounts.google.com/gsi/client';
+            script.async = true;
+            script.defer = true;
+            script.onload = () => {
+                console.log('✅ Google Identity Services загружена');
+                resolve();
+            };
+            script.onerror = () => {
+                reject(new Error('Не удалось загрузить Google Identity Services. Проверьте интернет-соединение.'));
+            };
+            document.head.appendChild(script);
+            setTimeout(() => {
+                if (typeof google === 'undefined' || !google.accounts) {
+                    reject(new Error('Таймаут загрузки Google API. Попробуйте обновить страницу.'));
+                }
+            }, 10000);
+        });
+    }
+
+    // ================================================================
+    //  АВТОРИЗАЦИЯ
     // ================================================================
     let accessToken = null;
     let isAuthorized = false;
 
-    // ================================================================
-    //  ФУНКЦИЯ АВТОРИЗАЦИИ (работает через Google Identity Services)
-    // ================================================================
     function authorize() {
         return new Promise((resolve, reject) => {
-            // Проверяем, есть ли токен в localStorage
             const savedToken = localStorage.getItem('g_token');
             if (savedToken) {
                 accessToken = savedToken;
                 isAuthorized = true;
+                console.log('✅ Токен восстановлен из localStorage');
                 resolve(true);
                 return;
             }
 
-            // Если токена нет, инициализируем Google Identity Services
-            console.log('Запрашиваем авторизацию через Google...');
+            if (typeof google === 'undefined' || !google.accounts) {
+                reject(new Error('Google API не загружена. Попробуйте обновить страницу.'));
+                return;
+            }
+
+            console.log('🔐 Запрашиваем авторизацию через Google...');
 
             const client = google.accounts.oauth2.initTokenClient({
                 client_id: CLIENT_ID,
                 scope: SCOPES,
                 callback: (tokenResponse) => {
                     if (tokenResponse.error) {
-                        console.error('Ошибка авторизации:', tokenResponse.error);
+                        console.error('❌ Ошибка авторизации:', tokenResponse.error);
                         reject(new Error(tokenResponse.error));
                         return;
                     }
@@ -295,33 +323,29 @@
                     resolve(true);
                 },
                 error_callback: (error) => {
-                    console.error('Ошибка при запросе токена:', error);
-                    reject(new Error('Ошибка авторизации: ' + error.message));
+                    console.error('❌ Ошибка при запросе токена:', error);
+                    reject(new Error('Ошибка авторизации: ' + (error.message || error.details || 'неизвестная ошибка')));
                 }
             });
 
             try {
                 client.requestAccessToken({ prompt: 'consent' });
             } catch (e) {
-                console.error('Ошибка при вызове requestAccessToken:', e);
+                console.error('❌ Ошибка при вызове requestAccessToken:', e);
                 reject(new Error('Не удалось открыть окно авторизации. Проверьте настройки OAuth.'));
             }
         });
     }
 
     // ================================================================
-    //  РАБОТА С ТАБЛИЦЕЙ (через fetch, без gapi.client)
+    //  РАБОТА С ТАБЛИЦЕЙ
     // ================================================================
     async function readSheet(range) {
-        if (!isAuthorized && !accessToken) {
-            await authorize();
-        }
-        if (!accessToken) {
-            throw new Error('Нет токена доступа');
-        }
+        if (!accessToken) await authorize();
+        if (!accessToken) throw new Error('Нет токена доступа');
 
         const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}`;
-        console.log('📥 Читаем данные:', url);
+        console.log(`📥 Читаем диапазон: ${range}`);
 
         const response = await fetch(url, {
             headers: {
@@ -332,45 +356,37 @@
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('❌ Ошибка чтения таблицы:', response.status, errorText);
+            console.error(`❌ Ошибка чтения (${response.status}):`, errorText);
             throw new Error(`Ошибка чтения: ${response.status} - ${errorText}`);
         }
 
         const data = await response.json();
-        console.log('✅ Данные получены, строк:', data.values ? data.values.length : 0);
+        console.log(`✅ Прочитано ${data.values ? data.values.length : 0} строк`);
         return data.values || [];
     }
 
     async function writeSheet(range, values) {
-        if (!isAuthorized && !accessToken) {
-            await authorize();
-        }
-        if (!accessToken) {
-            throw new Error('Нет токена доступа');
-        }
+        if (!accessToken) await authorize();
+        if (!accessToken) throw new Error('Нет токена доступа');
 
-        // Сначала очищаем диапазон
         const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}:clear`;
-        console.log('🗑️ Очищаем диапазон:', range);
-
-        let clearResponse = await fetch(clearUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
-        if (!clearResponse.ok) {
-            const errorText = await clearResponse.text();
-            console.warn('⚠️ Ошибка очистки (возможно диапазон пуст):', errorText);
+        try {
+            await fetch(clearUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            console.log(`🗑️ Диапазон ${range} очищен`);
+        } catch (e) {
+            console.warn('⚠️ Ошибка очистки (возможно диапазон пуст):', e);
         }
 
-        // Записываем новые данные
         const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}?valueInputOption=USER_ENTERED`;
-        console.log('✍️ Записываем данные, строк:', values.length);
+        console.log(`✍️ Записываем ${values.length} строк в ${range}`);
 
-        const updateResponse = await fetch(updateUrl, {
+        const response = await fetch(updateUrl, {
             method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${accessToken}`,
@@ -379,36 +395,20 @@
             body: JSON.stringify({ values: values })
         });
 
-        if (!updateResponse.ok) {
-            const errorText = await updateResponse.text();
-            console.error('❌ Ошибка записи:', updateResponse.status, errorText);
-            throw new Error(`Ошибка записи: ${updateResponse.status} - ${errorText}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`❌ Ошибка записи (${response.status}):`, errorText);
+            throw new Error(`Ошибка записи: ${response.status} - ${errorText}`);
         }
 
         console.log('✅ Данные записаны успешно!');
-        return await updateResponse.json();
+        return await response.json();
     }
 
     // ================================================================
-    //  ЗАГРУЗКА ДАННЫХ ИЗ ТАБЛИЦЫ
+    //  ЗАГРУЗКА ДАННЫХ
     // ================================================================
     let allData = { teachers: [], groups: [], students: [] };
-
-    async function loadAllData() {
-        try {
-            console.log('📥 Загружаем данные из таблицы...');
-            const dataRows = await readSheet('Data');
-            const parsed = parseDataRows(dataRows);
-            allData.teachers = parsed.teachers;
-            allData.groups = parsed.groups;
-            allData.students = parsed.students;
-            console.log('✅ Данные загружены, учителей:', allData.teachers.length, 'групп:', allData.groups.length, 'учеников:', allData.students.length);
-        } catch (e) {
-            console.error('❌ Ошибка загрузки Data:', e);
-            allData = { teachers: [], groups: [], students: [] };
-            throw e;
-        }
-    }
 
     function parseDataRows(rows) {
         const teachers = [];
@@ -418,7 +418,7 @@
         const groupMap = {};
 
         rows.forEach((row, index) => {
-            if (index === 0) return; // заголовки
+            if (index === 0) return;
             const [teacherId, teacherName, groupId, groupName, groupType, studentId, studentName] = row;
             if (!teacherId) return;
             if (teacherId && !teacherMap[teacherId]) {
@@ -436,9 +436,22 @@
         return { teachers, groups, students };
     }
 
-    // ================================================================
-    //  СОХРАНЕНИЕ ДАННЫХ В ТАБЛИЦУ
-    // ================================================================
+    async function loadAllData() {
+        try {
+            console.log('📥 Загружаем данные из таблицы...');
+            const dataRows = await readSheet('Data');
+            const parsed = parseDataRows(dataRows);
+            allData.teachers = parsed.teachers;
+            allData.groups = parsed.groups;
+            allData.students = parsed.students;
+            console.log(`✅ Загружено: ${allData.teachers.length} учителей, ${allData.groups.length} групп, ${allData.students.length} учеников`);
+        } catch (e) {
+            console.error('❌ Ошибка загрузки Data:', e);
+            allData = { teachers: [], groups: [], students: [] };
+            throw e;
+        }
+    }
+
     async function saveAllData() {
         const header = ['teacherId','teacherName','groupId','groupName','groupType','studentId','studentName'];
         const rows = [header];
@@ -454,11 +467,11 @@
             ]);
         });
         await writeSheet('Data', rows);
-        console.log('✅ Данные сохранены в таблицу');
+        console.log('✅ Данные сохранены');
     }
 
     // ================================================================
-    //  АУТЕНТИФИКАЦИЯ ПОЛЬЗОВАТЕЛЕЙ (по листу Users)
+    //  АУТЕНТИФИКАЦИЯ ПОЛЬЗОВАТЕЛЕЙ
     // ================================================================
     let currentUser = null;
 
@@ -470,12 +483,8 @@
         errorEl.textContent = '';
 
         try {
-            // Сначала авторизуемся в Google (если ещё нет)
-            if (!isAuthorized) {
-                await authorize();
-            }
+            if (!isAuthorized) await authorize();
 
-            // Читаем users.csv
             let users = [];
             try {
                 const userRows = await readSheet('Users');
@@ -508,7 +517,6 @@
             if (user.role === 'admin') {
                 currentUser = { id: 'admin', name: 'Администратор', role: 'admin' };
             } else {
-                // Ищем учителя с таким логином в данных
                 let teacher = allData.teachers.find(t => t.login === loginInput);
                 if (!teacher) {
                     teacher = { id: 't' + Date.now(), name: user.name || loginInput, login: loginInput };
@@ -567,6 +575,10 @@
     // ================================================================
     //  НАВИГАЦИЯ
     // ================================================================
+    let currentTeacherId = null;
+    let currentGroupId = null;
+    let teacherGroupId = null;
+
     document.querySelectorAll('#mainNav button').forEach(btn => {
         btn.addEventListener('click', function() {
             const section = this.dataset.section;
@@ -604,10 +616,6 @@
     // ================================================================
     //  РЕНДЕР УЧИТЕЛЕЙ (админ)
     // ================================================================
-    let currentTeacherId = null;
-    let currentGroupId = null;
-    let teacherGroupId = null;
-
     function renderTeachers() {
         if (currentUser.role !== 'admin') return;
         const search = document.getElementById('teacherSearch').value.toLowerCase();
@@ -819,7 +827,7 @@
     }
 
     // ================================================================
-    //  МОДАЛЬНОЕ ОКНО (универсальное)
+    //  МОДАЛЬНОЕ ОКНО
     // ================================================================
     let modalType = '';
     let editId = null;
@@ -944,7 +952,6 @@
             } else {
                 allData.teachers.push({ id: 't' + Date.now(), name, login, password });
             }
-            // Обновляем лист Users
             const users = allData.teachers.map(t => ([t.login, t.password, 'teacher', t.name]));
             users.unshift(['admin', 'admin123', 'admin', 'Администратор']);
             await writeSheet('Users', [['login','password','role','name'], ...users]);
@@ -1080,9 +1087,34 @@
     });
 
     // ================================================================
-    //  ЗАПУСК ПРИЛОЖЕНИЯ
+    //  ЗАПУСК
     // ================================================================
-    // Экспортируем глобальные функции для inline-обработчиков
+    (async function start() {
+        console.log('🚀 Запуск приложения...');
+        console.log('📋 Client ID:', CLIENT_ID);
+        console.log('📊 Spreadsheet ID:', SPREADSHEET_ID);
+
+        try {
+            await loadGoogleAPI();
+            await authorize();
+            await loadAllData();
+
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('mainApp').style.display = 'none';
+            document.getElementById('loginInput').focus();
+
+            console.log('✅ Приложение готово к работе!');
+        } catch (e) {
+            console.error('❌ Критическая ошибка:', e);
+            document.getElementById('loginError').textContent = '❌ ' + e.message;
+            document.getElementById('loginError').style.display = 'block';
+            alert('Ошибка запуска: ' + e.message + '\n\nПроверьте:\n1. Интернет-соединение\n2. Настройки OAuth в Google Cloud Console\n3. Client ID и ID таблицы в коде');
+        }
+    })();
+
+    // ================================================================
+    //  ЭКСПОРТ ГЛОБАЛЬНЫХ ФУНКЦИЙ
+    // ================================================================
     window.login = login;
     window.logout = logout;
     window.renderAll = renderAll;
@@ -1102,39 +1134,6 @@
     window.openModal = openModal;
     window.closeModal = closeModal;
     window.saveModal = saveModal;
-
-    // Старт: инициализируем Google API и загружаем данные
-    (async function start() {
-        console.log('🚀 Запуск приложения...');
-        console.log('📋 Client ID:', CLIENT_ID);
-        console.log('📊 Spreadsheet ID:', SPREADSHEET_ID);
-
-        // Проверяем, есть ли API
-        if (typeof google === 'undefined' || !google.accounts) {
-            console.error('❌ Google API не загружена!');
-            alert('Ошибка: Google API не загружена. Проверьте интернет-соединение.');
-            return;
-        }
-
-        try {
-            // Пытаемся авторизоваться
-            await authorize();
-            console.log('✅ Авторизация пройдена');
-
-            // Загружаем данные
-            await loadAllData();
-            console.log('✅ Данные загружены');
-
-            // Показываем экран входа
-            document.getElementById('loginScreen').style.display = 'flex';
-            document.getElementById('mainApp').style.display = 'none';
-            document.getElementById('loginInput').focus();
-            console.log('✅ Приложение готово к работе!');
-        } catch (e) {
-            console.error('❌ Критическая ошибка:', e);
-            alert('Не удалось подключиться к Google Таблице. Ошибка: ' + e.message + '\n\nПроверьте:\n1. Client ID в коде\n2. ID таблицы в коде\n3. Настройки OAuth в Google Cloud Console\n4. Откройте консоль (F12) для подробностей');
-        }
-    })();
 </script>
 </body>
 </html>
