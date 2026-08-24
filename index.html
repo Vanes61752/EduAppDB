@@ -4,11 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ДопОбразование – Google Sheets</title>
-    <!-- Google API Client Library -->
     <script src="https://apis.google.com/js/api.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <style>
-        /* ---------- Стили ---------- */
+        /* ---------- Все стили такие же, как в предыдущей версии ---------- */
         * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI', Roboto, system-ui, sans-serif; }
         body { background:#f4f7fc; min-height:100vh; display:flex; flex-direction:column; }
         #loginScreen { display:flex; justify-content:center; align-items:center; min-height:100vh; background:linear-gradient(135deg,#2a3f6e,#1a2a4a); padding:20px; }
@@ -258,99 +257,136 @@
     const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
 
     // ================================================================
-    //  РАБОТА С ТОКЕНОМ (localStorage)
+    //  ПЕРЕМЕННЫЕ ДЛЯ ОТЛАДКИ
     // ================================================================
-    function getToken() {
-        return localStorage.getItem('g_token');
-    }
-
-    function setToken(token) {
-        localStorage.setItem('g_token', token);
-    }
-
-    // ================================================================
-    //  ИНИЦИАЛИЗАЦИЯ И АВТОРИЗАЦИЯ ЧЕРЕЗ GOOGLE
-    // ================================================================
-    let tokenClient = null;
     let accessToken = null;
+    let isAuthorized = false;
 
-    function initGapi() {
-        return new Promise((resolve) => {
-            if (typeof gapi !== 'undefined' && gapi.client) {
-                resolve();
+    // ================================================================
+    //  ФУНКЦИЯ АВТОРИЗАЦИИ (работает через Google Identity Services)
+    // ================================================================
+    function authorize() {
+        return new Promise((resolve, reject) => {
+            // Проверяем, есть ли токен в localStorage
+            const savedToken = localStorage.getItem('g_token');
+            if (savedToken) {
+                accessToken = savedToken;
+                isAuthorized = true;
+                resolve(true);
                 return;
             }
-            const script = document.createElement('script');
-            script.src = 'https://apis.google.com/js/api.js';
-            script.onload = () => resolve();
-            document.head.appendChild(script);
-        });
-    }
 
-    async function authorize() {
-        await initGapi();
-        await new Promise((resolve) => gapi.load('client', resolve));
+            // Если токена нет, инициализируем Google Identity Services
+            console.log('Запрашиваем авторизацию через Google...');
 
-        await gapi.client.init({
-            clientId: CLIENT_ID,
-            scope: SCOPES,
-        });
-
-        // Проверяем, есть ли токен в localStorage
-        const savedToken = getToken();
-        if (savedToken) {
-            accessToken = savedToken;
-            gapi.client.setToken({ access_token: savedToken });
-            return true;
-        }
-
-        // Если нет, запрашиваем новый через OAuth
-        return new Promise((resolve) => {
-            tokenClient = google.accounts.oauth2.initTokenClient({
+            const client = google.accounts.oauth2.initTokenClient({
                 client_id: CLIENT_ID,
                 scope: SCOPES,
                 callback: (tokenResponse) => {
+                    if (tokenResponse.error) {
+                        console.error('Ошибка авторизации:', tokenResponse.error);
+                        reject(new Error(tokenResponse.error));
+                        return;
+                    }
                     accessToken = tokenResponse.access_token;
-                    setToken(accessToken);
-                    gapi.client.setToken({ access_token: accessToken });
+                    localStorage.setItem('g_token', accessToken);
+                    isAuthorized = true;
+                    console.log('✅ Авторизация успешна!');
                     resolve(true);
                 },
                 error_callback: (error) => {
-                    console.error('Ошибка авторизации:', error);
-                    resolve(false);
+                    console.error('Ошибка при запросе токена:', error);
+                    reject(new Error('Ошибка авторизации: ' + error.message));
                 }
             });
-            tokenClient.requestAccessToken({ prompt: 'consent' });
+
+            try {
+                client.requestAccessToken({ prompt: 'consent' });
+            } catch (e) {
+                console.error('Ошибка при вызове requestAccessToken:', e);
+                reject(new Error('Не удалось открыть окно авторизации. Проверьте настройки OAuth.'));
+            }
         });
     }
 
     // ================================================================
-    //  РАБОТА С ТАБЛИЦЕЙ (чтение/запись)
+    //  РАБОТА С ТАБЛИЦЕЙ (через fetch, без gapi.client)
     // ================================================================
     async function readSheet(range) {
-        if (!accessToken) await authorize();
-        const response = await gapi.client.sheets.spreadsheets.values.get({
-            spreadsheetId: SPREADSHEET_ID,
-            range: range,
+        if (!isAuthorized && !accessToken) {
+            await authorize();
+        }
+        if (!accessToken) {
+            throw new Error('Нет токена доступа');
+        }
+
+        const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}`;
+        console.log('📥 Читаем данные:', url);
+
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            }
         });
-        return response.result.values || [];
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('❌ Ошибка чтения таблицы:', response.status, errorText);
+            throw new Error(`Ошибка чтения: ${response.status} - ${errorText}`);
+        }
+
+        const data = await response.json();
+        console.log('✅ Данные получены, строк:', data.values ? data.values.length : 0);
+        return data.values || [];
     }
 
     async function writeSheet(range, values) {
-        if (!accessToken) await authorize();
+        if (!isAuthorized && !accessToken) {
+            await authorize();
+        }
+        if (!accessToken) {
+            throw new Error('Нет токена доступа');
+        }
+
         // Сначала очищаем диапазон
-        await gapi.client.sheets.spreadsheets.values.clear({
-            spreadsheetId: SPREADSHEET_ID,
-            range: range,
+        const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}:clear`;
+        console.log('🗑️ Очищаем диапазон:', range);
+
+        let clearResponse = await fetch(clearUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            }
         });
+
+        if (!clearResponse.ok) {
+            const errorText = await clearResponse.text();
+            console.warn('⚠️ Ошибка очистки (возможно диапазон пуст):', errorText);
+        }
+
         // Записываем новые данные
-        const response = await gapi.client.sheets.spreadsheets.values.update({
-            spreadsheetId: SPREADSHEET_ID,
-            range: range,
-            valueInputOption: 'USER_ENTERED',
-            resource: { values: values }
+        const updateUrl = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}?valueInputOption=USER_ENTERED`;
+        console.log('✍️ Записываем данные, строк:', values.length);
+
+        const updateResponse = await fetch(updateUrl, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ values: values })
         });
-        return response.result;
+
+        if (!updateResponse.ok) {
+            const errorText = await updateResponse.text();
+            console.error('❌ Ошибка записи:', updateResponse.status, errorText);
+            throw new Error(`Ошибка записи: ${updateResponse.status} - ${errorText}`);
+        }
+
+        console.log('✅ Данные записаны успешно!');
+        return await updateResponse.json();
     }
 
     // ================================================================
@@ -360,14 +396,17 @@
 
     async function loadAllData() {
         try {
+            console.log('📥 Загружаем данные из таблицы...');
             const dataRows = await readSheet('Data');
             const parsed = parseDataRows(dataRows);
             allData.teachers = parsed.teachers;
             allData.groups = parsed.groups;
             allData.students = parsed.students;
+            console.log('✅ Данные загружены, учителей:', allData.teachers.length, 'групп:', allData.groups.length, 'учеников:', allData.students.length);
         } catch (e) {
-            console.error('Ошибка загрузки Data:', e);
+            console.error('❌ Ошибка загрузки Data:', e);
             allData = { teachers: [], groups: [], students: [] };
+            throw e;
         }
     }
 
@@ -415,6 +454,7 @@
             ]);
         });
         await writeSheet('Data', rows);
+        console.log('✅ Данные сохранены в таблицу');
     }
 
     // ================================================================
@@ -427,54 +467,62 @@
         const passwordInput = document.getElementById('passwordInput').value.trim();
         const errorEl = document.getElementById('loginError');
         errorEl.style.display = 'none';
+        errorEl.textContent = '';
 
-        // Сначала авторизуемся в Google (если ещё нет)
-        await authorize();
-
-        // Читаем users.csv
-        let users = [];
         try {
-            const userRows = await readSheet('Users');
-            users = userRows.slice(1).map(row => ({
-                login: row[0] || '',
-                password: row[1] || '',
-                role: row[2] || 'teacher',
-                name: row[3] || ''
-            }));
-        } catch (e) {
-            console.error('Ошибка чтения Users:', e);
-            // Если листа нет, создаём тестовых
-            users = [
-                { login: 'admin', password: 'admin123', role: 'admin', name: 'Администратор' },
-                { login: 'teacher', password: 'teacher123', role: 'teacher', name: 'Тестовый учитель' }
-            ];
-            await writeSheet('Users', [
-                ['login','password','role','name'],
-                ['admin','admin123','admin','Администратор'],
-                ['teacher','teacher123','teacher','Тестовый учитель']
-            ]);
-        }
-
-        const user = users.find(u => u.login === loginInput && u.password === passwordInput);
-        if (!user) {
-            errorEl.textContent = 'Неверный логин или пароль';
-            errorEl.style.display = 'block';
-            return;
-        }
-
-        if (user.role === 'admin') {
-            currentUser = { id: 'admin', name: 'Администратор', role: 'admin' };
-        } else {
-            // Ищем учителя с таким логином в данных
-            let teacher = allData.teachers.find(t => t.login === loginInput);
-            if (!teacher) {
-                teacher = { id: 't' + Date.now(), name: user.name || loginInput, login: loginInput };
-                allData.teachers.push(teacher);
-                await saveAllData();
+            // Сначала авторизуемся в Google (если ещё нет)
+            if (!isAuthorized) {
+                await authorize();
             }
-            currentUser = { id: teacher.id, name: teacher.name, role: 'teacher' };
+
+            // Читаем users.csv
+            let users = [];
+            try {
+                const userRows = await readSheet('Users');
+                users = userRows.slice(1).map(row => ({
+                    login: row[0] || '',
+                    password: row[1] || '',
+                    role: row[2] || 'teacher',
+                    name: row[3] || ''
+                }));
+            } catch (e) {
+                console.warn('⚠️ Лист Users не найден, создаём тестовых пользователей');
+                users = [
+                    { login: 'admin', password: 'admin123', role: 'admin', name: 'Администратор' },
+                    { login: 'teacher', password: 'teacher123', role: 'teacher', name: 'Тестовый учитель' }
+                ];
+                await writeSheet('Users', [
+                    ['login','password','role','name'],
+                    ['admin','admin123','admin','Администратор'],
+                    ['teacher','teacher123','teacher','Тестовый учитель']
+                ]);
+            }
+
+            const user = users.find(u => u.login === loginInput && u.password === passwordInput);
+            if (!user) {
+                errorEl.textContent = '❌ Неверный логин или пароль';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            if (user.role === 'admin') {
+                currentUser = { id: 'admin', name: 'Администратор', role: 'admin' };
+            } else {
+                // Ищем учителя с таким логином в данных
+                let teacher = allData.teachers.find(t => t.login === loginInput);
+                if (!teacher) {
+                    teacher = { id: 't' + Date.now(), name: user.name || loginInput, login: loginInput };
+                    allData.teachers.push(teacher);
+                    await saveAllData();
+                }
+                currentUser = { id: teacher.id, name: teacher.name, role: 'teacher' };
+            }
+            enterApp();
+        } catch (e) {
+            console.error('❌ Ошибка входа:', e);
+            errorEl.textContent = '❌ Ошибка подключения к таблице: ' + e.message;
+            errorEl.style.display = 'block';
         }
-        enterApp();
     }
 
     function enterApp() {
@@ -539,531 +587,4 @@
 
         if (section === 'teachers') renderTeachers();
         else if (section === 'groups') renderTeacherGroups();
-        else if (section === 'excel') { populateExcelFilters(); renderExcel(); }
-    }
-
-    function closeAllDetails() {
-        document.getElementById('teachersListCard').style.display = 'block';
-        document.getElementById('teacherGroupsCard').style.display = 'none';
-        document.getElementById('groupStudentsCard').style.display = 'none';
-        document.getElementById('teacherGroupsMainCard').style.display = 'block';
-        document.getElementById('teacherGroupStudentsCard').style.display = 'none';
-        currentTeacherId = null;
-        currentGroupId = null;
-        teacherGroupId = null;
-    }
-
-    // ================================================================
-    //  РЕНДЕР УЧИТЕЛЕЙ (админ)
-    // ================================================================
-    function renderTeachers() {
-        if (currentUser.role !== 'admin') return;
-        const search = document.getElementById('teacherSearch').value.toLowerCase();
-        let teachers = allData.teachers;
-        if (search) teachers = teachers.filter(t => t.name.toLowerCase().includes(search) || (t.login || '').toLowerCase().includes(search));
-        const container = document.getElementById('teacherList');
-        if (!teachers.length) {
-            container.innerHTML = `<div class="empty-state"><i class="fas fa-chalkboard-teacher"></i><p>Учителей пока нет</p></div>`;
-            return;
-        }
-        container.innerHTML = teachers.map(t => `
-            <div class="item-card" onclick="openTeacherDetail('${t.id}')">
-                <div class="info">
-                    <div class="name">${t.name}</div>
-                    <div class="sub">Логин: ${t.login || '—'}</div>
-                </div>
-                <div class="actions">
-                    <button onclick="event.stopPropagation(); openModal('teacher','${t.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
-                    <button onclick="event.stopPropagation(); deleteTeacher('${t.id}')" title="Удалить"><i class="fas fa-trash" style="color:#c0392b;"></i></button>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    function openTeacherDetail(teacherId) {
-        currentTeacherId = teacherId;
-        const teacher = allData.teachers.find(t => t.id === teacherId);
-        if (!teacher) return;
-        document.getElementById('teachersListCard').style.display = 'none';
-        document.getElementById('teacherGroupsCard').style.display = 'block';
-        document.getElementById('teacherNameDisplay').textContent = teacher.name;
-        renderTeacherGroupsForAdmin(teacherId);
-    }
-
-    function renderTeacherGroupsForAdmin(teacherId) {
-        const groups = allData.groups.filter(g => g.teacherId === teacherId);
-        const container = document.getElementById('teacherGroupsList');
-        if (!groups.length) {
-            container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>У этого учителя пока нет групп</p></div>`;
-            return;
-        }
-        container.innerHTML = groups.map(g => {
-            const typeLabel = g.type === 'paid' ? '<span class="badge badge-paid"><i class="fas fa-coins"></i> Платная</span>' : '<span class="badge badge-free">Бесплатная</span>';
-            const count = allData.students.filter(s => s.groupId === g.id).length;
-            return `
-                <div class="item-card" onclick="openGroupDetailAdmin('${g.id}')">
-                    <div class="info">
-                        <div class="name">${g.name} ${typeLabel}</div>
-                        <div class="sub">Учеников: ${count}</div>
-                    </div>
-                    <div class="actions">
-                        <button onclick="event.stopPropagation(); openModal('group','${g.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
-                        <button onclick="event.stopPropagation(); deleteGroupAdmin('${g.id}')" title="Удалить"><i class="fas fa-trash" style="color:#c0392b;"></i></button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    function closeTeacherDetail() {
-        currentTeacherId = null;
-        document.getElementById('teacherGroupsCard').style.display = 'none';
-        document.getElementById('teachersListCard').style.display = 'block';
-        renderTeachers();
-    }
-
-    async function deleteTeacher(id) {
-        if (!confirm('Удалить учителя? Все его группы и ученики будут удалены.')) return;
-        allData.teachers = allData.teachers.filter(t => t.id !== id);
-        allData.groups = allData.groups.filter(g => g.teacherId !== id);
-        allData.students = allData.students.filter(s => {
-            const group = allData.groups.find(g => g.id === s.groupId);
-            return group && group.teacherId !== id;
-        });
-        await saveAllData();
-        renderAll();
-        if (currentTeacherId === id) closeTeacherDetail();
-    }
-
-    // ================================================================
-    //  РАБОТА С ГРУППАМИ (админ)
-    // ================================================================
-    function openGroupDetailAdmin(groupId) {
-        currentGroupId = groupId;
-        const group = allData.groups.find(g => g.id === groupId);
-        if (!group) return;
-        document.getElementById('teacherGroupsCard').style.display = 'none';
-        document.getElementById('groupStudentsCard').style.display = 'block';
-        document.getElementById('groupNameDisplay').textContent = group.name;
-        renderGroupStudentsAdmin(groupId);
-    }
-
-    function renderGroupStudentsAdmin(groupId) {
-        const students = allData.students.filter(s => s.groupId === groupId);
-        const container = document.getElementById('groupStudentsList');
-        if (!students.length) {
-            container.innerHTML = `<div class="empty-state"><i class="fas fa-user-graduate"></i><p>В этой группе пока нет учеников</p></div>`;
-            return;
-        }
-        container.innerHTML = students.map(s => `
-            <div class="student-item">
-                <span class="name">${s.name}</span>
-                <div class="actions">
-                    <button onclick="editStudentAdmin('${s.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
-                    <button onclick="deleteStudentAdmin('${s.id}')" title="Удалить"><i class="fas fa-trash" style="color:#c0392b;"></i></button>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    function closeGroupDetail() {
-        currentGroupId = null;
-        document.getElementById('groupStudentsCard').style.display = 'none';
-        document.getElementById('teacherGroupsCard').style.display = 'block';
-        if (currentTeacherId) renderTeacherGroupsForAdmin(currentTeacherId);
-    }
-
-    async function deleteStudentAdmin(id) {
-        if (!confirm('Удалить ученика?')) return;
-        allData.students = allData.students.filter(s => s.id !== id);
-        await saveAllData();
-        if (currentGroupId) renderGroupStudentsAdmin(currentGroupId);
-        renderAll();
-    }
-
-    async function deleteGroupAdmin(id) {
-        if (!confirm('Удалить группу? Все ученики в ней также будут удалены.')) return;
-        allData.groups = allData.groups.filter(g => g.id !== id);
-        allData.students = allData.students.filter(s => s.groupId !== id);
-        await saveAllData();
-        if (currentGroupId === id) closeGroupDetail();
-        renderAll();
-    }
-
-    function editStudentAdmin(id) {
-        const student = allData.students.find(s => s.id === id);
-        if (!student) return;
-        openModal('student', id);
-    }
-
-    // ================================================================
-    //  РАБОТА С ГРУППАМИ (учитель)
-    // ================================================================
-    function renderTeacherGroups() {
-        if (currentUser.role !== 'teacher') return;
-        const search = document.getElementById('teacherGroupSearch').value.toLowerCase();
-        let groups = allData.groups.filter(g => g.teacherId === currentUser.id);
-        if (search) groups = groups.filter(g => g.name.toLowerCase().includes(search));
-        const container = document.getElementById('teacherGroupsMainList');
-        if (!groups.length) {
-            container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>У вас пока нет групп</p></div>`;
-            return;
-        }
-        container.innerHTML = groups.map(g => {
-            const typeLabel = g.type === 'paid' ? '<span class="badge badge-paid"><i class="fas fa-coins"></i> Платная</span>' : '<span class="badge badge-free">Бесплатная</span>';
-            const count = allData.students.filter(s => s.groupId === g.id).length;
-            return `
-                <div class="item-card" onclick="openTeacherGroupDetail('${g.id}')">
-                    <div class="info">
-                        <div class="name">${g.name} ${typeLabel}</div>
-                        <div class="sub">Учеников: ${count}</div>
-                    </div>
-                    <div class="actions">
-                        <button onclick="event.stopPropagation(); openModal('group','${g.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    function openTeacherGroupDetail(groupId) {
-        teacherGroupId = groupId;
-        const group = allData.groups.find(g => g.id === groupId);
-        if (!group) return;
-        document.getElementById('teacherGroupsMainCard').style.display = 'none';
-        document.getElementById('teacherGroupStudentsCard').style.display = 'block';
-        document.getElementById('teacherGroupNameDisplay').textContent = group.name;
-        renderTeacherGroupStudents(groupId);
-    }
-
-    function renderTeacherGroupStudents(groupId) {
-        const students = allData.students.filter(s => s.groupId === groupId);
-        const container = document.getElementById('teacherGroupStudentsList');
-        if (!students.length) {
-            container.innerHTML = `<div class="empty-state"><i class="fas fa-user-graduate"></i><p>В этой группе пока нет учеников</p></div>`;
-            return;
-        }
-        container.innerHTML = students.map(s => `
-            <div class="student-item">
-                <span class="name">${s.name}</span>
-                <div class="actions">
-                    <button onclick="editStudentTeacher('${s.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    function closeTeacherGroupDetail() {
-        teacherGroupId = null;
-        document.getElementById('teacherGroupStudentsCard').style.display = 'none';
-        document.getElementById('teacherGroupsMainCard').style.display = 'block';
-        renderTeacherGroups();
-    }
-
-    function editStudentTeacher(id) {
-        const student = allData.students.find(s => s.id === id);
-        if (!student) return;
-        openModal('student', id);
-    }
-
-    // ================================================================
-    //  МОДАЛЬНОЕ ОКНО (универсальное)
-    // ================================================================
-    let modalType = '';
-    let editId = null;
-
-    window.openModal = function(type, id = null) {
-        modalType = type;
-        editId = id;
-        const modal = document.getElementById('modal');
-        const title = document.getElementById('modalTitleText');
-        const body = document.getElementById('modalBody');
-
-        title.textContent = id ? 'Редактировать' : 'Добавить';
-
-        let html = '';
-        if (type === 'teacher') {
-            if (currentUser.role !== 'admin') { alert('Доступ запрещён'); return; }
-            const data = id ? allData.teachers.find(t => t.id === id) : null;
-            html = `
-                <label>ФИО учителя</label>
-                <input type="text" id="teacherName" value="${data ? data.name : ''}" placeholder="Иванова Анна Петровна">
-                <label>Логин (для входа)</label>
-                <input type="text" id="teacherLogin" value="${data ? data.login || '' : ''}" placeholder="ivanova">
-                <label>Пароль</label>
-                <input type="text" id="teacherPassword" value="${data ? data.password || '' : ''}" placeholder="пароль">
-            `;
-        } else if (type === 'group') {
-            const data = id ? allData.groups.find(g => g.id === id) : null;
-            let teacherId = currentTeacherId;
-            if (!teacherId && currentUser.role === 'teacher') teacherId = currentUser.id;
-            if (!teacherId && currentUser.role === 'admin') {
-                const teachers = allData.teachers;
-                if (teachers.length === 0) { alert('Сначала добавьте учителя.'); return; }
-                html = `
-                    <label>Название группы</label>
-                    <input type="text" id="groupName" value="${data ? data.name : ''}" placeholder="Рисование">
-                    <label>Тип</label>
-                    <select id="groupType">
-                        <option value="free" ${data && data.type === 'free' ? 'selected' : ''}>Бесплатная</option>
-                        <option value="paid" ${data && data.type === 'paid' ? 'selected' : ''}>Платная</option>
-                    </select>
-                    <label>Учитель</label>
-                    <select id="groupTeacher">
-                        ${teachers.map(t => `<option value="${t.id}" ${data && data.teacherId === t.id ? 'selected' : ''}>${t.name}</option>`).join('')}
-                    </select>
-                `;
-            } else {
-                const teacher = allData.teachers.find(t => t.id === teacherId);
-                html = `
-                    <label>Название группы</label>
-                    <input type="text" id="groupName" value="${data ? data.name : ''}" placeholder="Рисование">
-                    <label>Тип</label>
-                    <select id="groupType">
-                        <option value="free" ${data && data.type === 'free' ? 'selected' : ''}>Бесплатная</option>
-                        <option value="paid" ${data && data.type === 'paid' ? 'selected' : ''}>Платная</option>
-                    </select>
-                    <input type="hidden" id="groupTeacher" value="${teacherId}">
-                    <span class="text-muted">Учитель: ${teacher ? teacher.name : ''}</span>
-                `;
-            }
-        } else if (type === 'student') {
-            const data = id ? allData.students.find(s => s.id === id) : null;
-            let groupId = currentGroupId || teacherGroupId;
-            if (!groupId && currentUser.role === 'admin') {
-                let groups = allData.groups;
-                if (currentTeacherId) groups = groups.filter(g => g.teacherId === currentTeacherId);
-                if (groups.length === 0) { alert('Сначала создайте группу для этого учителя.'); return; }
-                html = `
-                    <label>ФИО ученика</label>
-                    <input type="text" id="studentName" value="${data ? data.name : ''}" placeholder="Петров Иван">
-                    <label>Группа</label>
-                    <select id="studentGroup">
-                        ${groups.map(g => `<option value="${g.id}" ${data && data.groupId === g.id ? 'selected' : ''}>${g.name}</option>`).join('')}
-                    </select>
-                `;
-            } else {
-                html = `
-                    <label>ФИО ученика</label>
-                    <input type="text" id="studentName" value="${data ? data.name : ''}" placeholder="Петров Иван">
-                    <input type="hidden" id="studentGroup" value="${groupId || ''}">
-                `;
-            }
-        }
-        body.innerHTML = html;
-        modal.classList.add('show');
-
-        const escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
-        document.addEventListener('keydown', escHandler);
-        const inputs = body.querySelectorAll('input, select');
-        inputs.forEach(inp => inp.addEventListener('keydown', e => { if (e.key === 'Enter') saveModal(); }));
-        const firstInput = body.querySelector('input');
-        if (firstInput) setTimeout(() => firstInput.focus(), 100);
-        modal._escHandler = escHandler;
-    };
-
-    window.closeModal = function() {
-        const modal = document.getElementById('modal');
-        modal.classList.remove('show');
-        if (modal._escHandler) {
-            document.removeEventListener('keydown', modal._escHandler);
-            delete modal._escHandler;
-        }
-        editId = null;
-    };
-
-    window.saveModal = async function() {
-        if (modalType === 'teacher') {
-            if (currentUser.role !== 'admin') return alert('Доступ запрещён');
-            const name = document.getElementById('teacherName').value.trim();
-            const login = document.getElementById('teacherLogin').value.trim();
-            const password = document.getElementById('teacherPassword').value.trim();
-            if (!name || !login || !password) return alert('Заполните все поля');
-            if (allData.teachers.some(t => t.login === login && t.id !== editId)) {
-                return alert('Учитель с таким логином уже существует');
-            }
-            if (editId) {
-                const idx = allData.teachers.findIndex(t => t.id === editId);
-                if (idx !== -1) {
-                    allData.teachers[idx].name = name;
-                    allData.teachers[idx].login = login;
-                    allData.teachers[idx].password = password;
-                }
-            } else {
-                allData.teachers.push({ id: 't' + Date.now(), name, login, password });
-            }
-            // Обновляем лист Users
-            const users = allData.teachers.map(t => ([t.login, t.password, 'teacher', t.name]));
-            users.unshift(['admin', 'admin123', 'admin', 'Администратор']);
-            await writeSheet('Users', [['login','password','role','name'], ...users]);
-            await saveAllData();
-            closeModal();
-            renderAll();
-        } else if (modalType === 'group') {
-            const name = document.getElementById('groupName').value.trim();
-            if (!name) return alert('Введите название группы');
-            const type = document.getElementById('groupType').value;
-            let teacherId = document.getElementById('groupTeacher')?.value;
-            if (!teacherId) {
-                if (currentUser.role === 'teacher') teacherId = currentUser.id;
-                else return alert('Выберите учителя');
-            }
-            if (editId) {
-                const idx = allData.groups.findIndex(g => g.id === editId);
-                if (idx !== -1) { allData.groups[idx].name = name; allData.groups[idx].type = type; allData.groups[idx].teacherId = teacherId; }
-            } else {
-                allData.groups.push({ id: 'g' + Date.now(), name, teacherId, type });
-            }
-            await saveAllData();
-            closeModal();
-            renderAll();
-            if (currentTeacherId) renderTeacherGroupsForAdmin(currentTeacherId);
-            if (currentGroupId) renderGroupStudentsAdmin(currentGroupId);
-            if (teacherGroupId) renderTeacherGroupStudents(teacherGroupId);
-        } else if (modalType === 'student') {
-            const name = document.getElementById('studentName').value.trim();
-            if (!name) return alert('Введите ФИО ученика');
-            let groupId = document.getElementById('studentGroup')?.value;
-            if (!groupId) {
-                if (currentGroupId) groupId = currentGroupId;
-                else if (teacherGroupId) groupId = teacherGroupId;
-                else return alert('Выберите группу');
-            }
-            if (editId) {
-                const idx = allData.students.findIndex(s => s.id === editId);
-                if (idx !== -1) { allData.students[idx].name = name; allData.students[idx].groupId = groupId; }
-            } else {
-                allData.students.push({ id: 's' + Date.now(), name, groupId });
-            }
-            await saveAllData();
-            closeModal();
-            renderAll();
-            if (currentGroupId) renderGroupStudentsAdmin(currentGroupId);
-            if (teacherGroupId) renderTeacherGroupStudents(teacherGroupId);
-        }
-    };
-
-    // ================================================================
-    //  EXCEL (админ)
-    // ================================================================
-    function populateExcelFilters() {
-        const teacherSel = document.getElementById('excelTeacherFilter');
-        const groupSel = document.getElementById('excelGroupFilter');
-        const currentTeacher = teacherSel.value;
-        const currentGroup = groupSel.value;
-        teacherSel.innerHTML = '<option value="">Все учителя</option>' +
-            allData.teachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-        groupSel.innerHTML = '<option value="">Все группы</option>' +
-            allData.groups.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
-        teacherSel.value = currentTeacher;
-        groupSel.value = currentGroup;
-    }
-
-    function renderExcel() {
-        const search = document.getElementById('excelSearch').value.toLowerCase();
-        const teacherFilter = document.getElementById('excelTeacherFilter').value;
-        const groupFilter = document.getElementById('excelGroupFilter').value;
-
-        let students = allData.students;
-        let groups = allData.groups;
-        let teachers = allData.teachers;
-
-        if (teacherFilter) {
-            const teacherGroups = groups.filter(g => g.teacherId === teacherFilter).map(g => g.id);
-            students = students.filter(s => teacherGroups.includes(s.groupId));
-        }
-        if (groupFilter) {
-            students = students.filter(s => s.groupId === groupFilter);
-        }
-        if (search) {
-            students = students.filter(s => {
-                const group = groups.find(g => g.id === s.groupId);
-                const teacher = group ? teachers.find(t => t.id === group.teacherId) : null;
-                const groupName = group ? group.name : '';
-                const teacherName = teacher ? teacher.name : '';
-                const type = group ? group.type : '';
-                return s.name.toLowerCase().includes(search) ||
-                       groupName.toLowerCase().includes(search) ||
-                       teacherName.toLowerCase().includes(search) ||
-                       type.toLowerCase().includes(search);
-            });
-        }
-
-        const tbody = document.getElementById('excelBody');
-        if (!students.length) {
-            tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:20px;">Нет данных</td></tr>`;
-            return;
-        }
-
-        let rows = '';
-        students.forEach(s => {
-            const group = groups.find(g => g.id === s.groupId);
-            const teacher = group ? teachers.find(t => t.id === group.teacherId) : null;
-            const teacherName = teacher ? teacher.name : '—';
-            const groupName = group ? group.name : '—';
-            const type = group ? (group.type === 'paid' ? '💰 Платная' : 'Бесплатная') : '—';
-            rows += `<tr><td>${teacherName}</td><td>${groupName}</td><td>${type}</td><td>${s.name}</td></tr>`;
-        });
-        tbody.innerHTML = rows;
-    }
-
-    // ================================================================
-    //  ОБЩИЙ РЕНДЕРИНГ
-    // ================================================================
-    function renderAll() {
-        if (currentUser.role === 'admin') {
-            renderTeachers();
-            populateExcelFilters();
-            renderExcel();
-        } else {
-            renderTeacherGroups();
-        }
-    }
-
-    // ================================================================
-    //  ЗАКРЫТИЕ МОДАЛКИ ПО КЛИКУ ВНЕ
-    // ================================================================
-    document.getElementById('modal').addEventListener('click', function(e) {
-        if (e.target === this) closeModal();
-    });
-
-    // ================================================================
-    //  ЗАПУСК ПРИЛОЖЕНИЯ
-    // ================================================================
-    // Экспортируем глобальные функции для inline-обработчиков
-    window.login = login;
-    window.logout = logout;
-    window.renderAll = renderAll;
-    window.switchTab = switchTab;
-    window.openTeacherDetail = openTeacherDetail;
-    window.closeTeacherDetail = closeTeacherDetail;
-    window.openGroupDetailAdmin = openGroupDetailAdmin;
-    window.closeGroupDetail = closeGroupDetail;
-    window.openTeacherGroupDetail = openTeacherGroupDetail;
-    window.closeTeacherGroupDetail = closeTeacherGroupDetail;
-    window.deleteTeacher = deleteTeacher;
-    window.deleteGroupAdmin = deleteGroupAdmin;
-    window.deleteStudentAdmin = deleteStudentAdmin;
-    window.editStudentAdmin = editStudentAdmin;
-    window.editStudentTeacher = editStudentTeacher;
-    window.renderExcel = renderExcel;
-    window.openModal = openModal;
-    window.closeModal = closeModal;
-    window.saveModal = saveModal;
-
-    // Старт: сразу авторизуемся и загружаем данные
-    (async function start() {
-        try {
-            await authorize();
-            await loadAllData();
-            document.getElementById('loginScreen').style.display = 'flex';
-            document.getElementById('mainApp').style.display = 'none';
-            document.getElementById('loginInput').focus();
-        } catch (e) {
-            console.error('Ошибка запуска:', e);
-            alert('Не удалось подключиться к Google Таблице. Проверьте Client ID и ID таблицы.');
-        }
-    })();
-</script>
-</body>
-</html>
+        else if (section === '
