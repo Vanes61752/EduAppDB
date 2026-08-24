@@ -587,4 +587,554 @@
 
         if (section === 'teachers') renderTeachers();
         else if (section === 'groups') renderTeacherGroups();
-        else if (section === '
+        else if (section === 'excel') { populateExcelFilters(); renderExcel(); }
+    }
+
+    function closeAllDetails() {
+        document.getElementById('teachersListCard').style.display = 'block';
+        document.getElementById('teacherGroupsCard').style.display = 'none';
+        document.getElementById('groupStudentsCard').style.display = 'none';
+        document.getElementById('teacherGroupsMainCard').style.display = 'block';
+        document.getElementById('teacherGroupStudentsCard').style.display = 'none';
+        currentTeacherId = null;
+        currentGroupId = null;
+        teacherGroupId = null;
+    }
+
+    // ================================================================
+    //  РЕНДЕР УЧИТЕЛЕЙ (админ)
+    // ================================================================
+    let currentTeacherId = null;
+    let currentGroupId = null;
+    let teacherGroupId = null;
+
+    function renderTeachers() {
+        if (currentUser.role !== 'admin') return;
+        const search = document.getElementById('teacherSearch').value.toLowerCase();
+        let teachers = allData.teachers;
+        if (search) teachers = teachers.filter(t => t.name.toLowerCase().includes(search) || (t.login || '').toLowerCase().includes(search));
+        const container = document.getElementById('teacherList');
+        if (!teachers.length) {
+            container.innerHTML = `<div class="empty-state"><i class="fas fa-chalkboard-teacher"></i><p>Учителей пока нет</p></div>`;
+            return;
+        }
+        container.innerHTML = teachers.map(t => `
+            <div class="item-card" onclick="openTeacherDetail('${t.id}')">
+                <div class="info">
+                    <div class="name">${t.name}</div>
+                    <div class="sub">Логин: ${t.login || '—'}</div>
+                </div>
+                <div class="actions">
+                    <button onclick="event.stopPropagation(); openModal('teacher','${t.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
+                    <button onclick="event.stopPropagation(); deleteTeacher('${t.id}')" title="Удалить"><i class="fas fa-trash" style="color:#c0392b;"></i></button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function openTeacherDetail(teacherId) {
+        currentTeacherId = teacherId;
+        const teacher = allData.teachers.find(t => t.id === teacherId);
+        if (!teacher) return;
+        document.getElementById('teachersListCard').style.display = 'none';
+        document.getElementById('teacherGroupsCard').style.display = 'block';
+        document.getElementById('teacherNameDisplay').textContent = teacher.name;
+        renderTeacherGroupsForAdmin(teacherId);
+    }
+
+    function renderTeacherGroupsForAdmin(teacherId) {
+        const groups = allData.groups.filter(g => g.teacherId === teacherId);
+        const container = document.getElementById('teacherGroupsList');
+        if (!groups.length) {
+            container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>У этого учителя пока нет групп</p></div>`;
+            return;
+        }
+        container.innerHTML = groups.map(g => {
+            const typeLabel = g.type === 'paid' ? '<span class="badge badge-paid"><i class="fas fa-coins"></i> Платная</span>' : '<span class="badge badge-free">Бесплатная</span>';
+            const count = allData.students.filter(s => s.groupId === g.id).length;
+            return `
+                <div class="item-card" onclick="openGroupDetailAdmin('${g.id}')">
+                    <div class="info">
+                        <div class="name">${g.name} ${typeLabel}</div>
+                        <div class="sub">Учеников: ${count}</div>
+                    </div>
+                    <div class="actions">
+                        <button onclick="event.stopPropagation(); openModal('group','${g.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
+                        <button onclick="event.stopPropagation(); deleteGroupAdmin('${g.id}')" title="Удалить"><i class="fas fa-trash" style="color:#c0392b;"></i></button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function closeTeacherDetail() {
+        currentTeacherId = null;
+        document.getElementById('teacherGroupsCard').style.display = 'none';
+        document.getElementById('teachersListCard').style.display = 'block';
+        renderTeachers();
+    }
+
+    async function deleteTeacher(id) {
+        if (!confirm('Удалить учителя? Все его группы и ученики будут удалены.')) return;
+        allData.teachers = allData.teachers.filter(t => t.id !== id);
+        allData.groups = allData.groups.filter(g => g.teacherId !== id);
+        allData.students = allData.students.filter(s => {
+            const group = allData.groups.find(g => g.id === s.groupId);
+            return group && group.teacherId !== id;
+        });
+        await saveAllData();
+        renderAll();
+        if (currentTeacherId === id) closeTeacherDetail();
+    }
+
+    // ================================================================
+    //  РАБОТА С ГРУППАМИ (админ)
+    // ================================================================
+    function openGroupDetailAdmin(groupId) {
+        currentGroupId = groupId;
+        const group = allData.groups.find(g => g.id === groupId);
+        if (!group) return;
+        document.getElementById('teacherGroupsCard').style.display = 'none';
+        document.getElementById('groupStudentsCard').style.display = 'block';
+        document.getElementById('groupNameDisplay').textContent = group.name;
+        renderGroupStudentsAdmin(groupId);
+    }
+
+    function renderGroupStudentsAdmin(groupId) {
+        const students = allData.students.filter(s => s.groupId === groupId);
+        const container = document.getElementById('groupStudentsList');
+        if (!students.length) {
+            container.innerHTML = `<div class="empty-state"><i class="fas fa-user-graduate"></i><p>В этой группе пока нет учеников</p></div>`;
+            return;
+        }
+        container.innerHTML = students.map(s => `
+            <div class="student-item">
+                <span class="name">${s.name}</span>
+                <div class="actions">
+                    <button onclick="editStudentAdmin('${s.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
+                    <button onclick="deleteStudentAdmin('${s.id}')" title="Удалить"><i class="fas fa-trash" style="color:#c0392b;"></i></button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function closeGroupDetail() {
+        currentGroupId = null;
+        document.getElementById('groupStudentsCard').style.display = 'none';
+        document.getElementById('teacherGroupsCard').style.display = 'block';
+        if (currentTeacherId) renderTeacherGroupsForAdmin(currentTeacherId);
+    }
+
+    async function deleteStudentAdmin(id) {
+        if (!confirm('Удалить ученика?')) return;
+        allData.students = allData.students.filter(s => s.id !== id);
+        await saveAllData();
+        if (currentGroupId) renderGroupStudentsAdmin(currentGroupId);
+        renderAll();
+    }
+
+    async function deleteGroupAdmin(id) {
+        if (!confirm('Удалить группу? Все ученики в ней также будут удалены.')) return;
+        allData.groups = allData.groups.filter(g => g.id !== id);
+        allData.students = allData.students.filter(s => s.groupId !== id);
+        await saveAllData();
+        if (currentGroupId === id) closeGroupDetail();
+        renderAll();
+    }
+
+    function editStudentAdmin(id) {
+        const student = allData.students.find(s => s.id === id);
+        if (!student) return;
+        openModal('student', id);
+    }
+
+    // ================================================================
+    //  РАБОТА С ГРУППАМИ (учитель)
+    // ================================================================
+    function renderTeacherGroups() {
+        if (currentUser.role !== 'teacher') return;
+        const search = document.getElementById('teacherGroupSearch').value.toLowerCase();
+        let groups = allData.groups.filter(g => g.teacherId === currentUser.id);
+        if (search) groups = groups.filter(g => g.name.toLowerCase().includes(search));
+        const container = document.getElementById('teacherGroupsMainList');
+        if (!groups.length) {
+            container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>У вас пока нет групп</p></div>`;
+            return;
+        }
+        container.innerHTML = groups.map(g => {
+            const typeLabel = g.type === 'paid' ? '<span class="badge badge-paid"><i class="fas fa-coins"></i> Платная</span>' : '<span class="badge badge-free">Бесплатная</span>';
+            const count = allData.students.filter(s => s.groupId === g.id).length;
+            return `
+                <div class="item-card" onclick="openTeacherGroupDetail('${g.id}')">
+                    <div class="info">
+                        <div class="name">${g.name} ${typeLabel}</div>
+                        <div class="sub">Учеников: ${count}</div>
+                    </div>
+                    <div class="actions">
+                        <button onclick="event.stopPropagation(); openModal('group','${g.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function openTeacherGroupDetail(groupId) {
+        teacherGroupId = groupId;
+        const group = allData.groups.find(g => g.id === groupId);
+        if (!group) return;
+        document.getElementById('teacherGroupsMainCard').style.display = 'none';
+        document.getElementById('teacherGroupStudentsCard').style.display = 'block';
+        document.getElementById('teacherGroupNameDisplay').textContent = group.name;
+        renderTeacherGroupStudents(groupId);
+    }
+
+    function renderTeacherGroupStudents(groupId) {
+        const students = allData.students.filter(s => s.groupId === groupId);
+        const container = document.getElementById('teacherGroupStudentsList');
+        if (!students.length) {
+            container.innerHTML = `<div class="empty-state"><i class="fas fa-user-graduate"></i><p>В этой группе пока нет учеников</p></div>`;
+            return;
+        }
+        container.innerHTML = students.map(s => `
+            <div class="student-item">
+                <span class="name">${s.name}</span>
+                <div class="actions">
+                    <button onclick="editStudentTeacher('${s.id}')" title="Редактировать"><i class="fas fa-pen"></i></button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function closeTeacherGroupDetail() {
+        teacherGroupId = null;
+        document.getElementById('teacherGroupStudentsCard').style.display = 'none';
+        document.getElementById('teacherGroupsMainCard').style.display = 'block';
+        renderTeacherGroups();
+    }
+
+    function editStudentTeacher(id) {
+        const student = allData.students.find(s => s.id === id);
+        if (!student) return;
+        openModal('student', id);
+    }
+
+    // ================================================================
+    //  МОДАЛЬНОЕ ОКНО (универсальное)
+    // ================================================================
+    let modalType = '';
+    let editId = null;
+
+    window.openModal = function(type, id = null) {
+        modalType = type;
+        editId = id;
+        const modal = document.getElementById('modal');
+        const title = document.getElementById('modalTitleText');
+        const body = document.getElementById('modalBody');
+
+        title.textContent = id ? 'Редактировать' : 'Добавить';
+
+        let html = '';
+        if (type === 'teacher') {
+            if (currentUser.role !== 'admin') { alert('Доступ запрещён'); return; }
+            const data = id ? allData.teachers.find(t => t.id === id) : null;
+            html = `
+                <label>ФИО учителя</label>
+                <input type="text" id="teacherName" value="${data ? data.name : ''}" placeholder="Иванова Анна Петровна">
+                <label>Логин (для входа)</label>
+                <input type="text" id="teacherLogin" value="${data ? data.login || '' : ''}" placeholder="ivanova">
+                <label>Пароль</label>
+                <input type="text" id="teacherPassword" value="${data ? data.password || '' : ''}" placeholder="пароль">
+            `;
+        } else if (type === 'group') {
+            const data = id ? allData.groups.find(g => g.id === id) : null;
+            let teacherId = currentTeacherId;
+            if (!teacherId && currentUser.role === 'teacher') teacherId = currentUser.id;
+            if (!teacherId && currentUser.role === 'admin') {
+                const teachers = allData.teachers;
+                if (teachers.length === 0) { alert('Сначала добавьте учителя.'); return; }
+                html = `
+                    <label>Название группы</label>
+                    <input type="text" id="groupName" value="${data ? data.name : ''}" placeholder="Рисование">
+                    <label>Тип</label>
+                    <select id="groupType">
+                        <option value="free" ${data && data.type === 'free' ? 'selected' : ''}>Бесплатная</option>
+                        <option value="paid" ${data && data.type === 'paid' ? 'selected' : ''}>Платная</option>
+                    </select>
+                    <label>Учитель</label>
+                    <select id="groupTeacher">
+                        ${teachers.map(t => `<option value="${t.id}" ${data && data.teacherId === t.id ? 'selected' : ''}>${t.name}</option>`).join('')}
+                    </select>
+                `;
+            } else {
+                const teacher = allData.teachers.find(t => t.id === teacherId);
+                html = `
+                    <label>Название группы</label>
+                    <input type="text" id="groupName" value="${data ? data.name : ''}" placeholder="Рисование">
+                    <label>Тип</label>
+                    <select id="groupType">
+                        <option value="free" ${data && data.type === 'free' ? 'selected' : ''}>Бесплатная</option>
+                        <option value="paid" ${data && data.type === 'paid' ? 'selected' : ''}>Платная</option>
+                    </select>
+                    <input type="hidden" id="groupTeacher" value="${teacherId}">
+                    <span class="text-muted">Учитель: ${teacher ? teacher.name : ''}</span>
+                `;
+            }
+        } else if (type === 'student') {
+            const data = id ? allData.students.find(s => s.id === id) : null;
+            let groupId = currentGroupId || teacherGroupId;
+            if (!groupId && currentUser.role === 'admin') {
+                let groups = allData.groups;
+                if (currentTeacherId) groups = groups.filter(g => g.teacherId === currentTeacherId);
+                if (groups.length === 0) { alert('Сначала создайте группу для этого учителя.'); return; }
+                html = `
+                    <label>ФИО ученика</label>
+                    <input type="text" id="studentName" value="${data ? data.name : ''}" placeholder="Петров Иван">
+                    <label>Группа</label>
+                    <select id="studentGroup">
+                        ${groups.map(g => `<option value="${g.id}" ${data && data.groupId === g.id ? 'selected' : ''}>${g.name}</option>`).join('')}
+                    </select>
+                `;
+            } else {
+                html = `
+                    <label>ФИО ученика</label>
+                    <input type="text" id="studentName" value="${data ? data.name : ''}" placeholder="Петров Иван">
+                    <input type="hidden" id="studentGroup" value="${groupId || ''}">
+                `;
+            }
+        }
+        body.innerHTML = html;
+        modal.classList.add('show');
+
+        const escHandler = (e) => { if (e.key === 'Escape') closeModal(); };
+        document.addEventListener('keydown', escHandler);
+        const inputs = body.querySelectorAll('input, select');
+        inputs.forEach(inp => inp.addEventListener('keydown', e => { if (e.key === 'Enter') saveModal(); }));
+        const firstInput = body.querySelector('input');
+        if (firstInput) setTimeout(() => firstInput.focus(), 100);
+        modal._escHandler = escHandler;
+    };
+
+    window.closeModal = function() {
+        const modal = document.getElementById('modal');
+        modal.classList.remove('show');
+        if (modal._escHandler) {
+            document.removeEventListener('keydown', modal._escHandler);
+            delete modal._escHandler;
+        }
+        editId = null;
+    };
+
+    window.saveModal = async function() {
+        if (modalType === 'teacher') {
+            if (currentUser.role !== 'admin') return alert('Доступ запрещён');
+            const name = document.getElementById('teacherName').value.trim();
+            const login = document.getElementById('teacherLogin').value.trim();
+            const password = document.getElementById('teacherPassword').value.trim();
+            if (!name || !login || !password) return alert('Заполните все поля');
+            if (allData.teachers.some(t => t.login === login && t.id !== editId)) {
+                return alert('Учитель с таким логином уже существует');
+            }
+            if (editId) {
+                const idx = allData.teachers.findIndex(t => t.id === editId);
+                if (idx !== -1) {
+                    allData.teachers[idx].name = name;
+                    allData.teachers[idx].login = login;
+                    allData.teachers[idx].password = password;
+                }
+            } else {
+                allData.teachers.push({ id: 't' + Date.now(), name, login, password });
+            }
+            // Обновляем лист Users
+            const users = allData.teachers.map(t => ([t.login, t.password, 'teacher', t.name]));
+            users.unshift(['admin', 'admin123', 'admin', 'Администратор']);
+            await writeSheet('Users', [['login','password','role','name'], ...users]);
+            await saveAllData();
+            closeModal();
+            renderAll();
+        } else if (modalType === 'group') {
+            const name = document.getElementById('groupName').value.trim();
+            if (!name) return alert('Введите название группы');
+            const type = document.getElementById('groupType').value;
+            let teacherId = document.getElementById('groupTeacher')?.value;
+            if (!teacherId) {
+                if (currentUser.role === 'teacher') teacherId = currentUser.id;
+                else return alert('Выберите учителя');
+            }
+            if (editId) {
+                const idx = allData.groups.findIndex(g => g.id === editId);
+                if (idx !== -1) { allData.groups[idx].name = name; allData.groups[idx].type = type; allData.groups[idx].teacherId = teacherId; }
+            } else {
+                allData.groups.push({ id: 'g' + Date.now(), name, teacherId, type });
+            }
+            await saveAllData();
+            closeModal();
+            renderAll();
+            if (currentTeacherId) renderTeacherGroupsForAdmin(currentTeacherId);
+            if (currentGroupId) renderGroupStudentsAdmin(currentGroupId);
+            if (teacherGroupId) renderTeacherGroupStudents(teacherGroupId);
+        } else if (modalType === 'student') {
+            const name = document.getElementById('studentName').value.trim();
+            if (!name) return alert('Введите ФИО ученика');
+            let groupId = document.getElementById('studentGroup')?.value;
+            if (!groupId) {
+                if (currentGroupId) groupId = currentGroupId;
+                else if (teacherGroupId) groupId = teacherGroupId;
+                else return alert('Выберите группу');
+            }
+            if (editId) {
+                const idx = allData.students.findIndex(s => s.id === editId);
+                if (idx !== -1) { allData.students[idx].name = name; allData.students[idx].groupId = groupId; }
+            } else {
+                allData.students.push({ id: 's' + Date.now(), name, groupId });
+            }
+            await saveAllData();
+            closeModal();
+            renderAll();
+            if (currentGroupId) renderGroupStudentsAdmin(currentGroupId);
+            if (teacherGroupId) renderTeacherGroupStudents(teacherGroupId);
+        }
+    };
+
+    // ================================================================
+    //  EXCEL (админ)
+    // ================================================================
+    function populateExcelFilters() {
+        const teacherSel = document.getElementById('excelTeacherFilter');
+        const groupSel = document.getElementById('excelGroupFilter');
+        const currentTeacher = teacherSel.value;
+        const currentGroup = groupSel.value;
+        teacherSel.innerHTML = '<option value="">Все учителя</option>' +
+            allData.teachers.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+        groupSel.innerHTML = '<option value="">Все группы</option>' +
+            allData.groups.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+        teacherSel.value = currentTeacher;
+        groupSel.value = currentGroup;
+    }
+
+    function renderExcel() {
+        const search = document.getElementById('excelSearch').value.toLowerCase();
+        const teacherFilter = document.getElementById('excelTeacherFilter').value;
+        const groupFilter = document.getElementById('excelGroupFilter').value;
+
+        let students = allData.students;
+        let groups = allData.groups;
+        let teachers = allData.teachers;
+
+        if (teacherFilter) {
+            const teacherGroups = groups.filter(g => g.teacherId === teacherFilter).map(g => g.id);
+            students = students.filter(s => teacherGroups.includes(s.groupId));
+        }
+        if (groupFilter) {
+            students = students.filter(s => s.groupId === groupFilter);
+        }
+        if (search) {
+            students = students.filter(s => {
+                const group = groups.find(g => g.id === s.groupId);
+                const teacher = group ? teachers.find(t => t.id === group.teacherId) : null;
+                const groupName = group ? group.name : '';
+                const teacherName = teacher ? teacher.name : '';
+                const type = group ? group.type : '';
+                return s.name.toLowerCase().includes(search) ||
+                       groupName.toLowerCase().includes(search) ||
+                       teacherName.toLowerCase().includes(search) ||
+                       type.toLowerCase().includes(search);
+            });
+        }
+
+        const tbody = document.getElementById('excelBody');
+        if (!students.length) {
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; padding:20px;">Нет данных</td></tr>`;
+            return;
+        }
+
+        let rows = '';
+        students.forEach(s => {
+            const group = groups.find(g => g.id === s.groupId);
+            const teacher = group ? teachers.find(t => t.id === group.teacherId) : null;
+            const teacherName = teacher ? teacher.name : '—';
+            const groupName = group ? group.name : '—';
+            const type = group ? (group.type === 'paid' ? '💰 Платная' : 'Бесплатная') : '—';
+            rows += `<tr><td>${teacherName}</td><td>${groupName}</td><td>${type}</td><td>${s.name}</td></tr>`;
+        });
+        tbody.innerHTML = rows;
+    }
+
+    // ================================================================
+    //  ОБЩИЙ РЕНДЕРИНГ
+    // ================================================================
+    function renderAll() {
+        if (currentUser.role === 'admin') {
+            renderTeachers();
+            populateExcelFilters();
+            renderExcel();
+        } else {
+            renderTeacherGroups();
+        }
+    }
+
+    // ================================================================
+    //  ЗАКРЫТИЕ МОДАЛКИ ПО КЛИКУ ВНЕ
+    // ================================================================
+    document.getElementById('modal').addEventListener('click', function(e) {
+        if (e.target === this) closeModal();
+    });
+
+    // ================================================================
+    //  ЗАПУСК ПРИЛОЖЕНИЯ
+    // ================================================================
+    // Экспортируем глобальные функции для inline-обработчиков
+    window.login = login;
+    window.logout = logout;
+    window.renderAll = renderAll;
+    window.switchTab = switchTab;
+    window.openTeacherDetail = openTeacherDetail;
+    window.closeTeacherDetail = closeTeacherDetail;
+    window.openGroupDetailAdmin = openGroupDetailAdmin;
+    window.closeGroupDetail = closeGroupDetail;
+    window.openTeacherGroupDetail = openTeacherGroupDetail;
+    window.closeTeacherGroupDetail = closeTeacherGroupDetail;
+    window.deleteTeacher = deleteTeacher;
+    window.deleteGroupAdmin = deleteGroupAdmin;
+    window.deleteStudentAdmin = deleteStudentAdmin;
+    window.editStudentAdmin = editStudentAdmin;
+    window.editStudentTeacher = editStudentTeacher;
+    window.renderExcel = renderExcel;
+    window.openModal = openModal;
+    window.closeModal = closeModal;
+    window.saveModal = saveModal;
+
+    // Старт: инициализируем Google API и загружаем данные
+    (async function start() {
+        console.log('🚀 Запуск приложения...');
+        console.log('📋 Client ID:', CLIENT_ID);
+        console.log('📊 Spreadsheet ID:', SPREADSHEET_ID);
+
+        // Проверяем, есть ли API
+        if (typeof google === 'undefined' || !google.accounts) {
+            console.error('❌ Google API не загружена!');
+            alert('Ошибка: Google API не загружена. Проверьте интернет-соединение.');
+            return;
+        }
+
+        try {
+            // Пытаемся авторизоваться
+            await authorize();
+            console.log('✅ Авторизация пройдена');
+
+            // Загружаем данные
+            await loadAllData();
+            console.log('✅ Данные загружены');
+
+            // Показываем экран входа
+            document.getElementById('loginScreen').style.display = 'flex';
+            document.getElementById('mainApp').style.display = 'none';
+            document.getElementById('loginInput').focus();
+            console.log('✅ Приложение готово к работе!');
+        } catch (e) {
+            console.error('❌ Критическая ошибка:', e);
+            alert('Не удалось подключиться к Google Таблице. Ошибка: ' + e.message + '\n\nПроверьте:\n1. Client ID в коде\n2. ID таблицы в коде\n3. Настройки OAuth в Google Cloud Console\n4. Откройте консоль (F12) для подробностей');
+        }
+    })();
+</script>
+</body>
+</html>
