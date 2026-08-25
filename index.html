@@ -228,7 +228,14 @@
 
         <!-- СЕКЦИЯ УЧИТЕЛЕЙ -->
         <section id="section-teachers" class="section animated">
-            <div id="teachersList"></div>
+            <div id="viewTeachersMain">
+                <div id="teachersList"></div>
+            </div>
+            <div id="viewTeacherGroups" style="display:none;">
+                <button class="back-btn" onclick="backToTeachers()"><i class="fas fa-arrow-left"></i> К списку учителей</button>
+                <h2 id="selectedTeacherTitle" style="font-size: 18px; margin-bottom: 12px;"></h2>
+                <div id="teacherGroupsList"></div>
+            </div>
         </section>
 
         <!-- СЕКЦИЯ БАЗЫ -->
@@ -267,11 +274,12 @@
 </div>
 
 <script>
-    const API_URL = "https://script.google.com/macros/s/AKfycbzYFZCOdnrCRB8RI_6n5EDCt5fFLTkNJDHTrdPEkuL8BIvLGZQTab3ntIAFCZNEX6UUrg/exec";
+    const API_URL = "https://script.google.com/macros/s/AKfycby3LaMsaAjPsRZJe7DxHxJj5AQc_LpDmn6dZdEiwrtho872jsppVaoNz5NomoR9c8A_Vw/exec";
 
     let currentUser = null;
     let globalData = { teachers: [], groups: [], records: [] };
     let activeGroup = null;
+    let selectedTeacherName = null;
     let currentModalType = '';
 
     function showLoader(show) { document.getElementById('loader').style.display = show ? 'flex' : 'none'; }
@@ -364,6 +372,7 @@
         if (currentUser.role === 'admin') {
             renderTeachers();
             renderExcel();
+            if (selectedTeacherName) renderTeacherGroups();
         }
         if (activeGroup) renderStudents();
     }
@@ -371,7 +380,6 @@
     function renderGroups() {
         const container = document.getElementById('groupsList');
         
-        // Фильтрация групп по пользователю
         let groupsToDisplay = globalData.groups;
         if (currentUser.role !== 'admin') {
             groupsToDisplay = globalData.groups.filter(g => g.teacher === currentUser.name);
@@ -382,37 +390,42 @@
             return;
         }
 
-        container.innerHTML = groupsToDisplay.map(g => {
-            const filledCount = globalData.records.filter(r => r.sheetName === g.teacher && r.group === g.name && r.student).length;
-            const percent = Math.min(100, Math.round((filledCount / (g.capacity || 10)) * 100));
-            const isFull = filledCount >= (g.capacity || 10);
+        container.innerHTML = groupsToDisplay.map(g => renderGroupCard(g)).join('');
+    }
 
-            return `
-                <div class="card-item" onclick="openGroup('${g.name}', '${g.type}', '${g.teacher}', ${g.capacity || 10})">
-                    <div class="card-row">
-                        <div>
-                            <div class="title">${g.name}</div>
-                            ${currentUser.role === 'admin' ? `<div class="sub"><b>Учитель:</b> ${g.teacher}</div>` : ''}
-                        </div>
-                        <span class="badge ${g.type === 'paid' ? 'badge-paid' : 'badge-free'}">
-                            ${g.type === 'paid' ? 'Платная' : 'Бесплатная'}
-                        </span>
+    function renderGroupCard(g) {
+        const filledCount = globalData.records.filter(r => r.sheetName === g.teacher && r.group === g.name && r.student).length;
+        const percent = Math.min(100, Math.round((filledCount / (g.capacity || 10)) * 100));
+        const isFull = filledCount >= (g.capacity || 10);
+
+        return `
+            <div class="card-item" onclick="openGroup('${g.name}', '${g.type}', '${g.teacher}', ${g.capacity || 10})">
+                <div class="card-row">
+                    <div>
+                        <div class="title">${g.name}</div>
+                        ${currentUser.role === 'admin' ? `<div class="sub"><b>Учитель:</b> ${g.teacher}</div>` : ''}
                     </div>
-                    <div class="card-row" style="margin-top: 4px;">
-                        <span class="sub"><i class="fas fa-users"></i> Занято: <b>${filledCount}</b> из <b>${g.capacity || 10}</b></span>
-                        <span class="sub" style="font-weight: 600; color: ${isFull ? 'var(--danger)' : 'var(--primary)'}">${percent}%</span>
-                    </div>
-                    <div class="progress-bar-bg">
-                        <div class="progress-bar-fill ${isFull ? 'full' : ''}" style="width: ${percent}%;"></div>
-                    </div>
+                    <span class="badge ${g.type === 'paid' ? 'badge-paid' : 'badge-free'}">
+                        ${g.type === 'paid' ? 'Платная' : 'Бесплатная'}
+                    </span>
                 </div>
-            `;
-        }).join('');
+                <div class="card-row" style="margin-top: 4px;">
+                    <span class="sub"><i class="fas fa-users"></i> Занято: <b>${filledCount}</b> из <b>${g.capacity || 10}</b></span>
+                    <span class="sub" style="font-weight: 600; color: ${isFull ? 'var(--danger)' : 'var(--primary)'}">${percent}%</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill ${isFull ? 'full' : ''}" style="width: ${percent}%;"></div>
+                </div>
+            </div>
+        `;
     }
 
     function openGroup(name, type, teacher, capacity) {
         vibrate();
         activeGroup = { name, type, teacher, capacity };
+        
+        // Переключаем интерфейс на просмотр студентов
+        switchTab('groups');
         document.getElementById('viewGroups').style.display = 'none';
         document.getElementById('viewStudents').style.display = 'block';
 
@@ -466,16 +479,48 @@
             container.innerHTML = `<div class="empty-state"><i class="fas fa-chalkboard-teacher"></i><p>Учителей нет</p></div>`;
             return;
         }
-        container.innerHTML = globalData.teachers.map(t => `
-            <div class="card-item" style="cursor: default;">
-                <div class="card-row">
-                    <div>
-                        <div class="title">${t.name}</div>
-                        <div class="sub">Логин: ${t.login}</div>
+        container.innerHTML = globalData.teachers.map(t => {
+            const countGroups = globalData.groups.filter(g => g.teacher === t.name).length;
+            return `
+                <div class="card-item" onclick="openTeacher('${t.name}')">
+                    <div class="card-row">
+                        <div>
+                            <div class="title">${t.name}</div>
+                            <div class="sub">Логин: ${t.login}</div>
+                        </div>
+                        <span class="sub" style="font-weight: 600;"><i class="fas fa-layer-group"></i> Групп: ${countGroups}</span>
                     </div>
                 </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
+    }
+
+    function openTeacher(teacherName) {
+        vibrate();
+        selectedTeacherName = teacherName;
+        document.getElementById('viewTeachersMain').style.display = 'none';
+        document.getElementById('viewTeacherGroups').style.display = 'block';
+        document.getElementById('selectedTeacherTitle').textContent = `Группы учителя: ${teacherName}`;
+        renderTeacherGroups();
+    }
+
+    function backToTeachers() {
+        vibrate();
+        selectedTeacherName = null;
+        document.getElementById('viewTeacherGroups').style.display = 'none';
+        document.getElementById('viewTeachersMain').style.display = 'block';
+    }
+
+    function renderTeacherGroups() {
+        const container = document.getElementById('teacherGroupsList');
+        const tGroups = globalData.groups.filter(g => g.teacher === selectedTeacherName);
+
+        if (!tGroups.length) {
+            container.innerHTML = `<div class="empty-state"><i class="fas fa-layer-group"></i><p>У этого учителя пока нет групп.</p></div>`;
+            return;
+        }
+
+        container.innerHTML = tGroups.map(g => renderGroupCard(g)).join('');
     }
 
     function renderExcel() {
@@ -519,7 +564,7 @@
             title.textContent = 'Создать новую группу';
             let teacherSelectHtml = '';
             if (currentUser.role === 'admin') {
-                const options = globalData.teachers.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
+                const options = globalData.teachers.map(t => `<option value="${t.name}" ${selectedTeacherName === t.name ? 'selected' : ''}>${t.name}</option>`).join('');
                 teacherSelectHtml = `<div class="input-group"><label>Назначить учителя</label><select id="mGroupTeacher">${options}</select></div>`;
             }
 
@@ -633,10 +678,13 @@
         vibrate();
         currentUser = null;
         activeGroup = null;
+        selectedTeacherName = null;
         document.getElementById('mainApp').style.display = 'none';
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('viewStudents').style.display = 'none';
         document.getElementById('viewGroups').style.display = 'block';
+        document.getElementById('viewTeacherGroups').style.display = 'none';
+        document.getElementById('viewTeachersMain').style.display = 'block';
     }
 
     document.querySelectorAll('nav button').forEach(btn => {
